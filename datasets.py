@@ -101,7 +101,7 @@ class SentenceClassificationTestDataset(Dataset):
 
 class SentencePairDataset(Dataset):
     def __init__(self, dataset, args, isRegression=False):
-        self.dataset = dataset
+        self.dataset = dataset[:1000] if args.debug else dataset
         self.p = args
         self.isRegression = isRegression 
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
@@ -129,7 +129,10 @@ class SentencePairDataset(Dataset):
         attention_mask2 = torch.LongTensor(encoding2['attention_mask'])
         token_type_ids2 = torch.LongTensor(encoding2['token_type_ids'])
         if self.isRegression:
-            labels = torch.DoubleTensor(labels)
+            if torch.cuda.is_available():
+                labels = torch.DoubleTensor(labels)
+            else:
+                labels = torch.FloatTensor(labels)
         else:
             labels = torch.LongTensor(labels)
 
