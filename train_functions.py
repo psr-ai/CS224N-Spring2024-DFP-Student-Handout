@@ -100,16 +100,23 @@ def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, 
 
         if args.use_ray:
             with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
-                if dev_metric > best_dev_metric:
-                    logging.info(f"Saving model with dev metric {dev_metric}")
-                    save_model(model, optimizer, args, config, args.filepath)
                 metrics = {
                     'train_loss': train_loss,
                     'train_metric': train_metric,
                     'dev_metric': dev_metric,
                     'task_type': task_type
                 }
-                checkpoint = ray.train.Checkpoint.from_directory(temp_checkpoint_dir)
+                checkpoint = None
+                if ray.train.get_context().get_world_rank() == 0:
+
+                    ## Save the model checkpoint as ray checkpoint
+                    torch.save(model.state_dict(), f"{temp_checkpoint_dir}/model.pt")
+                    checkpoint = ray.train.Checkpoint.from_directory(temp_checkpoint_dir)
+
+                    ## Save the model checkpoint as submission checkpoint
+                    if dev_metric > best_dev_metric:
+                        logging.info(f"Saving model with dev metric {dev_metric} to {args.filepath} for submission")
+                        save_model(model, optimizer, args, config, args.filepath)
                 ray.train.report(
                     metrics,
                     checkpoint=checkpoint

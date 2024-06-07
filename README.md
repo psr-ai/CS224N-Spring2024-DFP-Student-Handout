@@ -27,10 +27,10 @@ created by Shuyan Zhou, Zhengbao Jiang, Ritam Dutt, Brendon Boldt, Aditya Veerub
 Parts of the code are from the [`transformers`](https://github.com/huggingface/transformers) library ([Apache License 2.0](./LICENSE)).
 
 
-## Ray
+## Ray Example
 
 Use the following run command:
 
 ```
-ray job submit --no-wait --runtime-env ray_runtime.yaml -- python multitask_classifier.py --use-ray --folder [root directory for data/model save] --debug --num-workers [number of workers] --fine-tune-mode full-model --lr 1e-5 --use_gpu
+ray job submit --no-wait --runtime-env ray_runtime.yaml -- python multitask_classifier.py --use-ray --name "Vanilla three tasks" --save-dir /project/rl-umn/cs224n-output --data-dir /project/rl-umn/cs224n --storage-path /project/rl-umn/cs224n-results --num-workers 5 --fine-tune-mode full-model --lr 1e-5 --use_gpu --batch_size 16
 ```

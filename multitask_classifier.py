@@ -37,7 +37,7 @@ from datasets import (
 from evaluation import model_eval_sst, model_eval_paraphrase, model_eval_multitask, model_eval_test_multitask, model_eval_sts
 from train_functions import training_loop as vanilla_training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss
 from train_functions_ray import training_loop as ray_training_loop
-from utils import get_device
+from utils import get_device, prepend_dir
 import ray
 
 # Fix the random seed.
@@ -303,7 +303,10 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-datasets", type=str, nargs='+', default=["sst", "para", "sts"])
     parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--folder", type=str, default='', required='--use-ray' in sys.argv)
+    parser.add_argument("--storage-path", help="Path where to store ray results and checkpoints", type=str, required='--use-ray' in sys.argv)
+    parser.add_argument("--data-dir", help="Path to train and dev datasets", type=str, required='--use-ray' in sys.argv, default='')
+    parser.add_argument("--save-dir", help="Path to store the best model at", type=str, default='', required='--use-ray' in sys.argv)
+    parser.add_argument("--name", type=str, required='--use-ray' in sys.argv, help="Name of the experiment")
     parser.add_argument("--debug", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--num-workers", type=int, required='--use-ray' in sys.argv)
     parser.add_argument("--tqdm-disable", action=argparse.BooleanOptionalAction, default=False)
@@ -342,22 +345,25 @@ def get_args():
     args = parser.parse_args()
     return args
 
-
 if __name__ == "__main__":
     args = get_args()
-    args.filepath = args.folder + f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
 
-    args.sst_train = args.folder + args.sst_train
-    args.sst_dev = args.folder + args.sst_dev
-    args.sst_test = args.folder + args.sst_test
+    if args.save_dir:
+        args.filepath = prepend_dir(args.save_dir, args.filepath)
+    
+    if args.data_dir:
+        args.sst_train = prepend_dir(args.data_dir, args.sst_train)
+        args.sst_dev = prepend_dir(args.data_dir, args.sst_dev)
+        args.sst_test = prepend_dir(args.data_dir, args.sst_test)
 
-    args.para_train = args.folder + args.para_train
-    args.para_dev = args.folder + args.para_dev
-    args.para_test = args.folder + args.para_test
+        args.para_train = prepend_dir(args.data_dir, args.para_train)
+        args.para_dev = prepend_dir(args.data_dir, args.para_dev)
+        args.para_test = prepend_dir(args.data_dir, args.para_test)
 
-    args.sts_train = args.folder + args.sts_train
-    args.sts_dev = args.folder + args.sts_dev
-    args.sts_test = args.folder + args.sts_test
+        args.sts_train = prepend_dir(args.data_dir, args.sts_train)
+        args.sts_dev = prepend_dir(args.data_dir, args.sts_dev)
+        args.sts_test = prepend_dir(args.data_dir, args.sts_test)
 
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     if not args.use_ray:
@@ -367,6 +373,14 @@ if __name__ == "__main__":
         logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
         logging.info(f"Using Ray for training with {args.num_workers} workers.")
         scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
-        run_config = ray.train.RunConfig(storage_path=args.folder)
-        trainer = ray.train.torch.TorchTrainer(train_multitask, train_loop_config=args, scaling_config=scaling_config)
+        # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
+        checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
+        run_config = ray.train.RunConfig(storage_path=args.storage_path,
+                                         name=args.name, 
+                                         checkpoint_config=checkpoint_config)
+
+        trainer = ray.train.torch.TorchTrainer(train_multitask, 
+                                               train_loop_config=args, 
+                                               scaling_config=scaling_config, 
+                                               run_config=run_config)
         result = trainer.fit()
