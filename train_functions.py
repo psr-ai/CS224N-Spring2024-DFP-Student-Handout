@@ -74,7 +74,7 @@ def sts_batch_loss(args, model, batch, optimizer, device):
     loss = F.mse_loss(logits.view(-1), b_labels, reduction='sum') / args.batch_size
     return loss
 
-def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, dev_dataloader, device, config, eval_fn):
+def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, dev_dataloader, device, config, eval_fn, task_type):
     best_dev_metric = 0
     for epoch in range(args.epochs):
         model.train()
@@ -85,7 +85,7 @@ def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, 
         train_loss = 0
         num_batches = 0
         for batch in tqdm(train_dataloader, desc=f'train-{epoch}', disable=args.tqdm_disable):
-            loss = compute_batch_loss(args, model, batch, optimizer, device) / args.batch_size
+            loss = compute_batch_loss(args, model.module if args.use_ray else model, batch, optimizer, device) / args.batch_size
 
             loss.backward()
             optimizer.step()
@@ -95,8 +95,8 @@ def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, 
 
         train_loss = train_loss / (num_batches)
 
-        train_metric, *_ = eval_fn(train_dataloader, model, device)
-        dev_metric, *_ = eval_fn(dev_dataloader, model, device)
+        train_metric, *_ = eval_fn(train_dataloader, model.module if args.use_ray else model, device)
+        dev_metric, *_ = eval_fn(dev_dataloader, model.module if args.use_ray else model, device)
 
         if args.use_ray:
             with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
@@ -107,7 +107,7 @@ def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, 
                     'train_loss': train_loss,
                     'train_metric': train_metric,
                     'dev_metric': dev_metric,
-                    'task_type': train_dataloader.__name__
+                    'task_type': task_type
                 }
                 checkpoint = ray.train.Checkpoint.from_directory(temp_checkpoint_dir)
                 ray.train.report(

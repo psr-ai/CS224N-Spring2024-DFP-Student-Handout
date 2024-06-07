@@ -13,6 +13,7 @@ writes all required submission files.
 '''
 
 import random, numpy as np, argparse
+import logging
 from types import SimpleNamespace
 
 import torch
@@ -200,13 +201,13 @@ def train_multitask(args):
     training_loop = vanilla_training_loop if not args.use_ray else ray_training_loop
     # Run for the specified number of epochs.
     if 'sst' in args.train_datasets:
-        training_loop(args, model, optimizer, sst_batch_loss, sst_train_dataloader, sst_dev_dataloader, device, config, model_eval_sst)
+        training_loop(args, model, optimizer, sst_batch_loss, sst_train_dataloader, sst_dev_dataloader, device, config, model_eval_sst, 'sentiment')
 
     if 'para' in args.train_datasets:
-        training_loop(args, model, optimizer, para_batch_loss, para_train_dataloader, para_dev_dataloader, device, config, model_eval_paraphrase)
+        training_loop(args, model, optimizer, para_batch_loss, para_train_dataloader, para_dev_dataloader, device, config, model_eval_paraphrase, 'paraphrase')
 
     if 'sts' in args.train_datasets:
-        training_loop(args, model, optimizer, sts_batch_loss, sts_train_dataloader, sts_dev_dataloader, device, config, model_eval_sts)
+        training_loop(args, model, optimizer, sts_batch_loss, sts_train_dataloader, sts_dev_dataloader, device, config, model_eval_sts, 'similarity')
 
 
 
@@ -363,6 +364,9 @@ if __name__ == "__main__":
         train_multitask(args)
         test_multitask(args)
     else:
+        logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
+        logging.info(f"Using Ray for training with {args.num_workers} workers.")
         scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
         run_config = ray.train.RunConfig(storage_path=args.folder)
-        ray.train.torch.TorchTrainer(train_multitask, train_loop_config=args, scaling_config=scaling_config)
+        trainer = ray.train.torch.TorchTrainer(train_multitask, train_loop_config=args, scaling_config=scaling_config)
+        result = trainer.fit()

@@ -34,7 +34,7 @@ def model_eval_sst(dataloader, model, device):
         logits = logits.detach().cpu().numpy()
         preds = np.argmax(logits, axis=1).flatten()
 
-        b_labels = b_labels.flatten()
+        b_labels = b_labels.cpu().flatten()
         y_true.extend(b_labels)
         y_pred.extend(preds)
         sents.extend(b_sents)
