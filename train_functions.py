@@ -3,6 +3,9 @@ import torch.nn.functional as F
 import torch
 import random
 import numpy as np
+import ray
+import tempfile
+import logging
 
 def save_model(model, optimizer, args, config, filepath):
     save_info = {
@@ -22,10 +25,11 @@ def sst_batch_loss(args, model, batch, optimizer, device):
     b_ids, b_mask, b_labels = (batch['token_ids'],
                                batch['attention_mask'],
                                batch['labels'])
-
-    b_ids = b_ids.to(device)
-    b_mask = b_mask.to(device)
-    b_labels = b_labels.to(device)
+    
+    if not args.use_ray:
+        b_ids = b_ids.to(device)
+        b_mask = b_mask.to(device)
+        b_labels = b_labels.to(device)
 
     optimizer.zero_grad()
     logits = model.predict_sentiment(b_ids, b_mask)
@@ -39,11 +43,12 @@ def para_batch_loss(args, model, batch, optimizer, device):
                   batch['token_ids_2'], batch['attention_mask_2'],
                   batch['labels'])
 
-    b_ids1 = b_ids1.to(device)
-    b_mask1 = b_mask1.to(device)
-    b_ids2 = b_ids2.to(device)
-    b_mask2 = b_mask2.to(device)
-    b_labels = b_labels.to(device)
+    if not args.use_ray:
+        b_ids1 = b_ids1.to(device)
+        b_mask1 = b_mask1.to(device)
+        b_ids2 = b_ids2.to(device)
+        b_mask2 = b_mask2.to(device)
+        b_labels = b_labels.to(device)
     
     optimizer.zero_grad()
     logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
@@ -56,12 +61,13 @@ def sts_batch_loss(args, model, batch, optimizer, device):
      b_labels) = (batch['token_ids_1'], batch['attention_mask_1'],
                   batch['token_ids_2'], batch['attention_mask_2'],
                   batch['labels'])
-
-    b_ids1 = b_ids1.to(device)
-    b_mask1 = b_mask1.to(device)
-    b_ids2 = b_ids2.to(device)
-    b_mask2 = b_mask2.to(device)
-    b_labels = b_labels.to(device)
+    
+    if not args.use_ray:
+        b_ids1 = b_ids1.to(device)
+        b_mask1 = b_mask1.to(device)
+        b_ids2 = b_ids2.to(device)
+        b_mask2 = b_mask2.to(device)
+        b_labels = b_labels.to(device)
     
     optimizer.zero_grad()
     logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
@@ -72,6 +78,10 @@ def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, 
     best_dev_metric = 0
     for epoch in range(args.epochs):
         model.train()
+
+        if args.use_ray and ray.train.get_context().get_world_size() > 1:
+            train_dataloader.sampler.set_epoch(epoch)
+
         train_loss = 0
         num_batches = 0
         for batch in tqdm(train_dataloader, desc=f'train-{epoch}', disable=args.tqdm_disable):
@@ -88,8 +98,25 @@ def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, 
         train_metric, *_ = eval_fn(train_dataloader, model, device)
         dev_metric, *_ = eval_fn(dev_dataloader, model, device)
 
-        if dev_metric > best_dev_metric:
-            best_dev_metric = dev_metric
-            save_model(model, optimizer, args, config, args.filepath)
+        if args.use_ray:
+            with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+                if dev_metric > best_dev_metric:
+                    logging.info(f"Saving model with dev metric {dev_metric}")
+                    save_model(model, optimizer, args, config, args.filepath)
+                metrics = {
+                    'train_loss': train_loss,
+                    'train_metric': train_metric,
+                    'dev_metric': dev_metric,
+                    'task_type': train_dataloader.__name__
+                }
+                checkpoint = ray.train.Checkpoint.from_directory(temp_checkpoint_dir)
+                ray.train.report(
+                    metrics,
+                    checkpoint=checkpoint
+                )
+        else:
+            if dev_metric > best_dev_metric:
+                best_dev_metric = dev_metric
+                save_model(model, optimizer, args, config, args.filepath)
 
-        print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train metric :: {train_metric :.3f}, dev metric :: {dev_metric :.3f}")
+        logging.info(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train metric :: {train_metric :.3f}, dev metric :: {dev_metric :.3f}")

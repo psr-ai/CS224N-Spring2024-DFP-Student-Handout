@@ -1,0 +1,6 @@
+/predictions/*.csv
+cs224n_default_final_project_submission.zip
+*.pt
+venvs
+.venv
+__pycache__

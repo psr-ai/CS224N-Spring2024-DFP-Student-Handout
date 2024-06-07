@@ -19,6 +19,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+import sys
 
 from bert import BertModel
 from optimizer import AdamW
@@ -33,9 +34,10 @@ from datasets import (
 )
 
 from evaluation import model_eval_sst, model_eval_paraphrase, model_eval_multitask, model_eval_test_multitask, model_eval_sts
-from train_functions import training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss
+from train_functions import training_loop as vanilla_training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss
+from train_functions_ray import training_loop as ray_training_loop
 from utils import get_device
-
+import ray
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -187,11 +189,15 @@ def train_multitask(args):
     config = SimpleNamespace(**config)
 
     model = MultitaskBERT(config)
-    model = model.to(device)
+    
+    # Move model to device only if not using ray, as ray will handle this.
+    if not args.use_ray:
+        model = model.to(device)
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
-
+    
+    training_loop = vanilla_training_loop if not args.use_ray else ray_training_loop
     # Run for the specified number of epochs.
     if 'sst' in args.train_datasets:
         training_loop(args, model, optimizer, sst_batch_loss, sst_train_dataloader, sst_dev_dataloader, device, config, model_eval_sst)
@@ -295,7 +301,10 @@ def test_multitask(args):
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-datasets", type=str, nargs='+', default=["sst", "para", "sts"])
+    parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--folder", type=str, default='', required='--use-ray' in sys.argv)
     parser.add_argument("--debug", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--num-workers", type=int, required='--use-ray' in sys.argv)
     parser.add_argument("--tqdm-disable", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--sst_train", type=str, default="data/ids-sst-train.csv")
     parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
@@ -335,7 +344,25 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+    args.filepath = args.folder + f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+
+    args.sst_train = args.folder + args.sst_train
+    args.sst_dev = args.folder + args.sst_dev
+    args.sst_test = args.folder + args.sst_test
+
+    args.para_train = args.folder + args.para_train
+    args.para_dev = args.folder + args.para_dev
+    args.para_test = args.folder + args.para_test
+
+    args.sts_train = args.folder + args.sts_train
+    args.sts_dev = args.folder + args.sts_dev
+    args.sts_test = args.folder + args.sts_test
+
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    train_multitask(args)
-    test_multitask(args)
+    if not args.use_ray:
+        train_multitask(args)
+        test_multitask(args)
+    else:
+        scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
+        run_config = ray.train.RunConfig(storage_path=args.folder)
+        ray.train.torch.TorchTrainer(train_multitask, train_loop_config=args, scaling_config=scaling_config)
