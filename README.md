@@ -32,5 +32,5 @@ Parts of the code are from the [`transformers`](https://github.com/huggingface/t
 Use the following run command:
 
 ```
-ray job submit --no-wait --runtime-env ray_runtime.yaml -- python multitask_classifier.py --use-ray --name "Vanilla three tasks" --save-dir /project/rl-umn/cs224n-output --data-dir /project/rl-umn/cs224n --storage-path /project/rl-umn/cs224n-results --num-workers 5 --fine-tune-mode full-model --lr 1e-5 --use_gpu --batch_size 16
+ray job submit --no-wait --runtime-env ray_runtime.yaml -- python multitask_classifier.py --use-ray --name experiment --save-dir /home/psr/output --data-dir /home/psr --storage-path /home/psr/results --num-workers 2 --fine-tune-mode full-model --lr 1e-5 --use_gpu --batch_size 16 --train-datasets para
 ```
