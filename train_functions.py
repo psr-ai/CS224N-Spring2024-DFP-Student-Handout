@@ -70,8 +70,15 @@ def sts_batch_loss(args, model, batch, optimizer, device):
         b_labels = b_labels.to(device)
     
     optimizer.zero_grad()
+
     logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-    loss = F.mse_loss(logits.view(-1), b_labels, reduction='sum') / args.batch_size
+    if args.cosine_similarity:
+        one = torch.tensor(1.0)
+        if not args.use_ray:
+            one = one.to(device)
+        loss = F.cosine_embedding_loss(logits.view(-1), b_labels, one, reduction='sum') / args.batch_size
+    else:
+        loss = F.mse_loss(logits.view(-1), b_labels, reduction='sum') / args.batch_size
     return loss
 
 def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, dev_dataloader, device, config, eval_fn, task_type):

@@ -201,12 +201,15 @@ def train_multitask(args):
     training_loop = vanilla_training_loop if not args.use_ray else ray_training_loop
     # Run for the specified number of epochs.
     if 'sst' in args.train_datasets:
+        logging.info("Training on SST")
         training_loop(args, model, optimizer, sst_batch_loss, sst_train_dataloader, sst_dev_dataloader, device, config, model_eval_sst, 'sentiment')
 
     if 'para' in args.train_datasets:
+        logging.info("Training on Paraphrase")
         training_loop(args, model, optimizer, para_batch_loss, para_train_dataloader, para_dev_dataloader, device, config, model_eval_paraphrase, 'paraphrase')
 
     if 'sts' in args.train_datasets:
+        logging.info("Training on STS")
         training_loop(args, model, optimizer, sts_batch_loss, sts_train_dataloader, sts_dev_dataloader, device, config, model_eval_sts, 'similarity')
 
 
@@ -309,6 +312,7 @@ def get_args():
     parser.add_argument("--name", type=str, required='--use-ray' in sys.argv, help="Name of the experiment")
     parser.add_argument("--debug", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--num-workers", type=int, required='--use-ray' in sys.argv)
+    parser.add_argument("--cosine-similarity", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--tqdm-disable", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--sst_train", type=str, default="data/ids-sst-train.csv")
     parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
@@ -346,6 +350,8 @@ def get_args():
     return args
 
 if __name__ == "__main__":
+
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
     args = get_args()
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
 
@@ -370,7 +376,6 @@ if __name__ == "__main__":
         train_multitask(args)
         test_multitask(args)
     else:
-        logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
         logging.info(f"Using Ray for training with {args.num_workers} workers.")
         scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
         # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
