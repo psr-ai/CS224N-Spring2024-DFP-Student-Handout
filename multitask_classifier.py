@@ -345,6 +345,7 @@ def get_args():
     parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+    parser.add_argument("--resume-from-checkpoint", type=str, help="Specify a checkpoint to resume from", default=None)
 
     args = parser.parse_args()
     return args
@@ -387,5 +388,6 @@ if __name__ == "__main__":
         trainer = ray.train.torch.TorchTrainer(train_multitask, 
                                                train_loop_config=args, 
                                                scaling_config=scaling_config, 
-                                               run_config=run_config)
+                                               run_config=run_config,
+                                               resume_from_checkpoint=args.resume_from_checkpoint)
         result = trainer.fit()
