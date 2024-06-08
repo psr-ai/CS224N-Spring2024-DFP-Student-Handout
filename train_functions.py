@@ -21,7 +21,7 @@ def save_model(model, optimizer, args, config, filepath):
     torch.save(save_info, filepath)
     logging.info(f"save the model to {filepath}")
 
-def sst_batch_loss(args, model, batch, optimizer, device):
+def sst_batch_loss(args, model, batch, optimizer = None, device = None):
     b_ids, b_mask, b_labels = (batch['token_ids'],
                                batch['attention_mask'],
                                batch['labels'])
@@ -30,13 +30,15 @@ def sst_batch_loss(args, model, batch, optimizer, device):
         b_ids = b_ids.to(device)
         b_mask = b_mask.to(device)
         b_labels = b_labels.to(device)
+    
+    if optimizer:
+        optimizer.zero_grad()
 
-    optimizer.zero_grad()
     logits = model.predict_sentiment(b_ids, b_mask)
     loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
     return loss
 
-def para_batch_loss(args, model, batch, optimizer, device):
+def para_batch_loss(args, model, batch, optimizer = None, device = None):
     (b_ids1, b_mask1,
      b_ids2, b_mask2,
      b_labels) = (batch['token_ids_1'], batch['attention_mask_1'],
@@ -49,13 +51,15 @@ def para_batch_loss(args, model, batch, optimizer, device):
         b_ids2 = b_ids2.to(device)
         b_mask2 = b_mask2.to(device)
         b_labels = b_labels.to(device)
-    
-    optimizer.zero_grad()
+
+    if optimizer:
+        optimizer.zero_grad()
+
     logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
     loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels, reduction='sum') / args.batch_size
     return loss
 
-def sts_batch_loss(args, model, batch, optimizer, device):
+def sts_batch_loss(args, model, batch, optimizer = None, device = None):
     (b_ids1, b_mask1,
      b_ids2, b_mask2,
      b_labels) = (batch['token_ids_1'], batch['attention_mask_1'],
@@ -68,8 +72,9 @@ def sts_batch_loss(args, model, batch, optimizer, device):
         b_ids2 = b_ids2.to(device)
         b_mask2 = b_mask2.to(device)
         b_labels = b_labels.to(device)
-    
-    optimizer.zero_grad()
+
+    if optimizer:
+        optimizer.zero_grad()
 
     logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
     if args.cosine_similarity:

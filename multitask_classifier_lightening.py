@@ -37,8 +37,10 @@ from datasets import (
 from evaluation import model_eval_sst, model_eval_paraphrase, model_eval_multitask, model_eval_test_multitask, model_eval_sts
 from train_functions import training_loop as vanilla_training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss
 from train_functions_ray import training_loop as ray_training_loop
+from train_functions import sst_batch_loss, sts_batch_loss, para_batch_loss
 from utils import get_device, prepend_dir
 import ray
+import lightning.pytorch as pl
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -55,7 +57,7 @@ BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
 
-class MultitaskBERT(nn.Module):
+class MultitaskBERT(pl.LightningModule):
     '''
     This module should use BERT for 3 tasks:
 
@@ -63,7 +65,7 @@ class MultitaskBERT(nn.Module):
     - Paraphrase detection (predict_paraphrase)
     - Semantic Textual Similarity (predict_similarity)
     '''
-    def __init__(self, config):
+    def __init__(self, config, args):
         super(MultitaskBERT, self).__init__()
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         # last-linear-layer mode does not require updating BERT paramters.
@@ -92,6 +94,23 @@ class MultitaskBERT(nn.Module):
             nn.ReLU(),
             nn.Linear(BERT_HIDDEN_SIZE, 1)
         )
+        self.task_type = None
+        self.args = args
+        self.config = config
+
+
+    def set_task_type(self, task_type):
+        self.task_type = task_type
+
+    def training_step(self, batch, _):
+        if self.task_type == 'sst':
+            return sst_batch_loss(self.args, self, batch)
+        elif self.task_type == 'para':
+            return para_batch_loss(self.args, self, batch)
+        elif self.task_type == 'sts':
+            return sts_batch_loss(self.args, self, batch)
+        else:
+            raise ValueError("Task type not set.")
 
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
@@ -189,7 +208,7 @@ def train_multitask(args):
 
     config = SimpleNamespace(**config)
 
-    model = MultitaskBERT(config)
+    model = MultitaskBERT(config, args)
     
     # Move model to device only if not using ray, as ray will handle this.
     if not args.use_ray:
@@ -202,14 +221,17 @@ def train_multitask(args):
     # Run for the specified number of epochs.
     if 'sst' in args.train_datasets:
         logging.info("Training on SST")
+        model.set_task_type('sst')
         training_loop(args, model, optimizer, sst_batch_loss, sst_train_dataloader, sst_dev_dataloader, device, config, model_eval_sst, 'sentiment')
 
     if 'para' in args.train_datasets:
         logging.info("Training on Paraphrase")
+        model.set_task_type('para')
         training_loop(args, model, optimizer, para_batch_loss, para_train_dataloader, para_dev_dataloader, device, config, model_eval_paraphrase, 'paraphrase')
 
     if 'sts' in args.train_datasets:
         logging.info("Training on STS")
+        model.set_task_type('sts')
         training_loop(args, model, optimizer, sts_batch_loss, sts_train_dataloader, sts_dev_dataloader, device, config, model_eval_sts, 'similarity')
 
 
@@ -221,7 +243,7 @@ def test_multitask(args):
         saved = torch.load(args.filepath)
         config = saved['model_config']
 
-        model = MultitaskBERT(config)
+        model = MultitaskBERT(config, args)
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
@@ -354,7 +376,7 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
     args = get_args()
-    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.batch_size}-multitask.pt' # Save path.
+    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
 
     if args.output_dir:
         args.filepath = prepend_dir(args.output_dir, args.filepath)
