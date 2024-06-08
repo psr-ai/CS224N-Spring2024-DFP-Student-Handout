@@ -25,3 +25,12 @@ The BERT implementation part of the project was adapted from the "minbert" assig
 created by Shuyan Zhou, Zhengbao Jiang, Ritam Dutt, Brendon Boldt, Aditya Veerubhotla, and Graham Neubig.
 
 Parts of the code are from the [`transformers`](https://github.com/huggingface/transformers) library ([Apache License 2.0](./LICENSE)).
+
+
+## Ray Example
+
+Use the following run command:
+
+```
+ray job submit --no-wait --runtime-env ray_runtime.yaml -- python multitask_classifier.py --use-ray --name experiment --save-dir /home/psr/output --data-dir /home/psr --storage-path /home/psr/results --num-workers 2 --fine-tune-mode full-model --lr 1e-5 --use_gpu --batch_size 16 --train-datasets para
+```

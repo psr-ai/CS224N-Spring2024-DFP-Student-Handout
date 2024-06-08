@@ -354,3 +354,6 @@ def get_device(use_gpu):
         else:
             device = torch.device('mps')
     return device
+
+def prepend_dir(dir_name, file_name):
+    return os.path.join(dir_name, file_name)
