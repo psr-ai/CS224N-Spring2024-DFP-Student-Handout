@@ -17,9 +17,9 @@ def save_model(model, optimizer, args, config, filepath):
         'numpy_rng': np.random.get_state(),
         'torch_rng': torch.random.get_rng_state(),
     }
-
+    
     torch.save(save_info, filepath)
-    print(f"save the model to {filepath}")
+    logging.info(f"save the model to {filepath}")
 
 def sst_batch_loss(args, model, batch, optimizer, device):
     b_ids, b_mask, b_labels = (batch['token_ids'],
@@ -122,7 +122,7 @@ def training_loop(args, model, optimizer, compute_batch_loss, train_dataloader, 
 
                     ## Save the model checkpoint as submission checkpoint
                     if dev_metric > best_dev_metric:
-                        logging.info(f"Saving model with dev metric {dev_metric} to {args.filepath} for submission")
+                        best_dev_metric = dev_metric
                         save_model(model, optimizer, args, config, args.filepath)
                 ray.train.report(
                     metrics,

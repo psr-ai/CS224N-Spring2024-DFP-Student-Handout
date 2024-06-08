@@ -307,8 +307,8 @@ def get_args():
     parser.add_argument("--train-datasets", type=str, nargs='+', default=["sst", "para", "sts"])
     parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--storage-path", help="Path where to store ray results and checkpoints", type=str, required='--use-ray' in sys.argv)
-    parser.add_argument("--data-dir", help="Path to train and dev datasets", type=str, required='--use-ray' in sys.argv, default='')
-    parser.add_argument("--save-dir", help="Path to store the best model at", type=str, default='', required='--use-ray' in sys.argv)
+    parser.add_argument("--data-dir", help="Path to train and dev datasets, expects them to be under data folder", type=str, required='--use-ray' in sys.argv, default='')
+    parser.add_argument("--output-dir", help="Path to store the best model at", type=str, default='', required='--use-ray' in sys.argv)
     parser.add_argument("--name", type=str, required='--use-ray' in sys.argv, help="Name of the experiment")
     parser.add_argument("--debug", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--num-workers", type=int, required='--use-ray' in sys.argv)
@@ -355,8 +355,8 @@ if __name__ == "__main__":
     args = get_args()
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
 
-    if args.save_dir:
-        args.filepath = prepend_dir(args.save_dir, args.filepath)
+    if args.output_dir:
+        args.filepath = prepend_dir(args.output_dir, args.filepath)
     
     if args.data_dir:
         args.sst_train = prepend_dir(args.data_dir, args.sst_train)
