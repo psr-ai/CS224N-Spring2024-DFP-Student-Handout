@@ -218,9 +218,23 @@ def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = get_device(args.use_gpu)
-        saved = torch.load(args.filepath)
+        saved = torch.load(args.filepath, map_location=device)
         config = saved['model_config']
 
+        new_state_dict = OrderedDict()
+
+        for k, v in saved.items():
+            if k == 'model':
+                new_state_dict['model'] = OrderedDict()
+                for k1, v1 in v.items():
+                    if 'module' in k1:
+                        new_state_dict['model'][k1.replace('module.', '')] = v1
+                    else:
+                        new_state_dict['model'][k1] = v1
+            else:
+                new_state_dict[k] = v
+        
+        saved = new_state_dict
         model = MultitaskBERT(config)
         model.load_state_dict(saved['model'])
         model = model.to(device)
@@ -346,6 +360,8 @@ def get_args():
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
     parser.add_argument("--resume-from-checkpoint", type=str, help="Specify a checkpoint to resume from", default=None)
+    parser.add_argument("--filepath", type=str, help="Path to save the model", default=None)
+    parser.add_argument("--mode", type=str, help="train or test", default="train")
 
     args = parser.parse_args()
     return args
@@ -354,7 +370,8 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
     args = get_args()
-    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.batch_size}-multitask.pt' # Save path.
+    if not args.filepath:
+        args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.batch_size}-multitask.pt' # Save path.
 
     if args.output_dir:
         args.filepath = prepend_dir(args.output_dir, args.filepath)
