@@ -71,4 +71,4 @@ jobs:
         if [ -f requirements.mac.txt ]; then pip install -r requirements.mac.txt; fi
     - name: Demo run with cosine similarity and sts dataset
       run: |
-        python multitask_classifier_lightening.py --name validation-testing --fine-tune-mode last-linear-layer --lr 1e-3 --debug --epochs-per-task 1 --tasks para --cosine-similarity
+        python multitask_classifier_lightening.py --name validation-testing --fine-tune-mode last-linear-layer --lr 1e-3 --debug --epochs-per-task 1 --tasks para --precision 16
