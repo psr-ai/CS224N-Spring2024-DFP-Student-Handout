@@ -210,6 +210,18 @@ def create_datasets(args):
 
     return datasets
 
+def get_config(args, datasets):
+    config = {'hidden_dropout_prob': args.hidden_dropout_prob,
+              'num_labels': datasets['num_labels'],
+              'hidden_size': 768,
+              'data_dir': '.',
+              'fine_tune_mode': args.fine_tune_mode}
+
+    config = SimpleNamespace(**config)
+
+    return config
+
+
 
 def train_multitask(args):
     '''Train MultitaskBERT.
@@ -223,19 +235,21 @@ def train_multitask(args):
     datasets = args.datasets
 
     # Init model.
-    config = {'hidden_dropout_prob': args.hidden_dropout_prob,
-              'num_labels': datasets['num_labels'],
-              'hidden_size': 768,
-              'data_dir': '.',
-              'fine_tune_mode': args.fine_tune_mode}
 
-    config = SimpleNamespace(**config)
+    config = get_config(args, datasets)
+    
 
     task = args.task 
 
     lightening_params = {
         'precision': args.precision
     }
+
+    if args.epochs_per_task:
+        callbacks = [ray_pl.RayTrainReportCallback()]
+
+    else:
+        callbacks = [ray_pl.RayTrainReportCallback(), EarlyStopping(monitor='train_loss', patience=3)]
     
     if args.use_ray:
         lightening_params = {
@@ -243,11 +257,9 @@ def train_multitask(args):
             'accelerator': 'auto',
             'strategy': ray_pl.RayFSDPStrategy() if args.strategy == 'fsdp' else ray_pl.RayDDPStrategy(find_unused_parameters=True),
             'plugins': [ray_pl.RayLightningEnvironment()],
-            'callbacks': [ray_pl.RayTrainReportCallback(), EarlyStopping(monitor='train_loss', patience=3)]
+            'callbacks': callbacks
         }
 
-
-    
 
     # create the model
     model = MultitaskBERT(config, args)
@@ -255,7 +267,7 @@ def train_multitask(args):
 
     # create the pl trainer
 
-    trainer = pl.Trainer(max_epochs=args.max_epochs, **lightening_params)
+    trainer = pl.Trainer(max_epochs=args.epochs_per_task or args.max_epochs, **lightening_params)
     # decide if model is trained by ray or not
     if args.use_ray:
         ray.train.lightning.prepare_trainer(trainer)
@@ -282,15 +294,21 @@ def train_multitask(args):
     save_model(model, None, args, config, args.filepath)
 
 
-def test_multitask(args):
+def test_multitask(args, from_checkpoint=False):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = get_device(args.use_gpu)
-        saved = torch.load(args.filepath, map_location=device)
-        config = saved['model_config']
 
-        model = MultitaskBERT(config, args)
-        model.load_state_dict(saved['model'])
+        if from_checkpoint:
+            config = get_config(args, args.datasets)
+            model = MultitaskBERT.load_from_checkpoint(args.filepath, config=config, args=args)
+        else:
+            saved = torch.load(args.filepath, map_location=device)
+            config = saved['model_config']
+
+            model = MultitaskBERT(config, args)
+            model.load_state_dict(saved['model'])
+        
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
 
@@ -397,6 +415,7 @@ def get_args():
 
     parser.add_argument("--seed", type=int, default=11711)
     parser.add_argument("--max-epochs", type=int, default=100)
+    parser.add_argument("--epochs-per-task", type=int, default=10)
     parser.add_argument("--fine-tune-mode", type=str,
                         help='last-linear-layer: the BERT parameters are frozen and the task specific head parameters are updated; full-model: BERT parameters are updated as well',
                         choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
@@ -417,7 +436,7 @@ def get_args():
     parser.add_argument("--resume-from-checkpoint", type=str, help="Specify a checkpoint to resume from", default=None)
     parser.add_argument("--strategy", type=str, help="Type of strategy", default='ddp')
     parser.add_argument("--precision", type=str, help="Precision", default='16-mixed')
-    parser.add_argument("--mode", type=str, default='train', help="train or test")
+    parser.add_argument("--mode", type=str, default='train', help="train, test")
     parser.add_argument("--filepath", type=str, default=None)
 
     args = parser.parse_args()
@@ -427,6 +446,10 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
     args = get_args()
+
+    # decide where to load the model from
+    # if not specified use the default name
+    # wih default output directory
     if not args.filepath:
         args.filepath = f'{args.fine_tune_mode}-{args.lr}-multitask.pt' # Save path.
 
@@ -452,7 +475,11 @@ if __name__ == "__main__":
 
     if args.mode == 'test':
         logging.info("-----------------Testing-----------------")
-        test_multitask(args)
+        is_checkpoint = False
+        if args.resume_from_checkpoint is not None:
+            args.filepath = args.resume_from_checkpoint
+            is_checkpoint = True
+        test_multitask(args, from_checkpoint=is_checkpoint)
 
     elif args.mode == 'train':
         checkpoint = None
@@ -478,5 +505,7 @@ if __name__ == "__main__":
                                                        resume_from_checkpoint=checkpoint)
                 result = trainer.fit()
                 checkpoint = result.checkpoint
+                if args.epochs_per_task:
+                    args.epochs_per_task += args.epochs_per_task
     else:
         raise ValueError("Mode must be either 'train' or 'test'")
