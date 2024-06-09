@@ -255,7 +255,7 @@ def train_multitask(args):
 
     lightening_params = {
         'precision': args.precision,
-        'accelerator': 'auto' if args.use_gpu else None,
+        'accelerator': 'auto' if args.use_gpu else 'cpu',
         'devices': 'auto'
     }
 
