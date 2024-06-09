@@ -1,6 +1,10 @@
 /predictions/*.csv
+/predictions-old/
 cs224n_default_final_project_submission.zip
 *.pt
 venvs
 .venv
 __pycache__
+lightning_logs/
+results/
+output/

@@ -30,7 +30,7 @@ jobs:
       run: |
         python -m unittest
 
-  mac-integration-tests:
+  mac-integration-tests-pytorch:
 
     runs-on: macos-latest
 
@@ -51,3 +51,24 @@ jobs:
     - name: Demo run with cosine similarity and sts dataset
       run: |
         python multitask_classifier.py --fine-tune-mode last-linear-layer --lr 1e-5 --cosine-similarity --debug --train-datasets sts --epochs 2
+  mac-integration-tests-pytorch-lightening:
+
+    runs-on: macos-latest
+
+    strategy:
+      matrix:
+        python-version: [3.11.7]
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.mac.txt ]; then pip install -r requirements.mac.txt; fi
+    - name: Demo run with cosine similarity and sts dataset
+      run: |
+        python multitask_classifier_lightening.py --name validation-testing --fine-tune-mode last-linear-layer --lr 1e-3 --debug --epochs-per-task 1 --tasks para --precision 32 --max-epochs 2

@@ -17,18 +17,20 @@ TQDM_DISABLE = False
 
 
 # Evaluate multitask model on SST only.
-def model_eval_sst(dataloader, model, device):
-    model.eval()  # Switch to eval model, will turn off randomness like dropout.
+def model_eval_sst(dataloader, model, device = None, single_batch = False):
     y_true = []
     y_pred = []
     sents = []
     sent_ids = []
-    for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
+    
+    dataloader = tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE) if not single_batch else [dataloader]
+    for step, batch in enumerate(dataloader):
         b_ids, b_mask, b_labels, b_sents, b_sent_ids = batch['token_ids'],batch['attention_mask'],  \
                                                         batch['labels'], batch['sents'], batch['sent_ids']
-
-        b_ids = b_ids.to(device)
-        b_mask = b_mask.to(device)
+        
+        if device:
+            b_ids = b_ids.to(device)
+            b_mask = b_mask.to(device)
 
         logits = model.predict_sentiment(b_ids, b_mask)
         logits = logits.detach().cpu().numpy()
@@ -46,21 +48,24 @@ def model_eval_sst(dataloader, model, device):
     return acc, f1, y_pred, y_true, sents, sent_ids
 
 
-def model_eval_paraphrase(dataloader, model, device):
+def model_eval_paraphrase(dataloader, model, device = None, single_batch=False):
     para_y_true = []
     para_y_pred = []
     para_sent_ids = []
-    for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
+    
+    dataloader = tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE) if not single_batch else [dataloader]
+    for step, batch in enumerate(dataloader):
         (b_ids1, b_mask1,
          b_ids2, b_mask2,
          b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
                       batch['token_ids_2'], batch['attention_mask_2'],
                       batch['labels'], batch['sent_ids'])
-
-        b_ids1 = b_ids1.to(device)
-        b_mask1 = b_mask1.to(device)
-        b_ids2 = b_ids2.to(device)
-        b_mask2 = b_mask2.to(device)
+        
+        if device:
+            b_ids1 = b_ids1.to(device)
+            b_mask1 = b_mask1.to(device)
+            b_ids2 = b_ids2.to(device)
+            b_mask2 = b_mask2.to(device)
 
         logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
         y_hat = logits.detach().sigmoid().round().flatten().cpu().numpy()
@@ -74,21 +79,23 @@ def model_eval_paraphrase(dataloader, model, device):
 
     return paraphrase_accuracy, para_y_pred, para_sent_ids
 
-def model_eval_sts(dataloader, model, device):
+def model_eval_sts(dataloader, model, device = None, single_batch=False):
     sts_y_true = []
     sts_y_pred = []
     sts_sent_ids = []
-    for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
+    dataloader = tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE) if not single_batch else [dataloader]
+    for step, batch in enumerate(dataloader):
         (b_ids1, b_mask1,
          b_ids2, b_mask2,
          b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
                       batch['token_ids_2'], batch['attention_mask_2'],
                       batch['labels'], batch['sent_ids'])
-
-        b_ids1 = b_ids1.to(device)
-        b_mask1 = b_mask1.to(device)
-        b_ids2 = b_ids2.to(device)
-        b_mask2 = b_mask2.to(device)
+        
+        if device:
+            b_ids1 = b_ids1.to(device)
+            b_mask1 = b_mask1.to(device)
+            b_ids2 = b_ids2.to(device)
+            b_mask2 = b_mask2.to(device)
 
         logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
         y_hat = logits.detach().flatten().cpu().numpy()

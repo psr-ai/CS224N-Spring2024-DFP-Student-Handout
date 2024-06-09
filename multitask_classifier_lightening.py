@@ -25,7 +25,6 @@ import sys
 from bert import BertModel
 from optimizer import AdamW
 from tqdm import tqdm
-from ray.train.torch import prepare_model, prepare_data_loader
 
 from datasets import (
     SentenceClassificationDataset,
@@ -36,11 +35,18 @@ from datasets import (
 )
 
 from evaluation import model_eval_sst, model_eval_paraphrase, model_eval_multitask, model_eval_test_multitask, model_eval_sts
-from train_functions import training_loop as vanilla_training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss
+from train_functions import training_loop as vanilla_training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss, save_model
 from train_functions_ray import training_loop as ray_training_loop
+from train_functions import sst_batch_loss, sts_batch_loss, para_batch_loss
 from utils import get_device, prepend_dir
 import ray
-from collections import OrderedDict
+import lightning.pytorch as pl
+import ray.train.lightning as ray_pl
+from lightning.pytorch.callbacks import EarlyStopping, Callback
+from ray import train
+from tempfile import TemporaryDirectory
+import os
+from ray.train import Checkpoint
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -56,8 +62,7 @@ def seed_everything(seed=11711):
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
-
-class MultitaskBERT(nn.Module):
+class MultitaskBERT(pl.LightningModule):
     '''
     This module should use BERT for 3 tasks:
 
@@ -65,7 +70,7 @@ class MultitaskBERT(nn.Module):
     - Paraphrase detection (predict_paraphrase)
     - Semantic Textual Similarity (predict_similarity)
     '''
-    def __init__(self, config):
+    def __init__(self, config={}, args={}):
         super(MultitaskBERT, self).__init__()
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         # last-linear-layer mode does not require updating BERT paramters.
@@ -94,6 +99,25 @@ class MultitaskBERT(nn.Module):
             nn.ReLU(),
             nn.Linear(BERT_HIDDEN_SIZE, 1)
         )
+        self.task_type = None
+        self.args = args
+        self.config = config
+
+
+    def set_task_type(self, task_type):
+        self.task_type = task_type
+
+    def training_step(self, batch, _):
+        if self.task_type == 'sst':
+            loss = sst_batch_loss(self.args, self, batch)
+        elif self.task_type == 'para':
+            loss = para_batch_loss(self.args, self, batch)
+        elif self.task_type == 'sts':
+            loss = sts_batch_loss(self.args, self, batch)
+        else:
+            raise ValueError("Task type not set.")
+        self.log('train_loss', round(loss.item(), 4))
+        return loss
 
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
@@ -142,18 +166,25 @@ class MultitaskBERT(nn.Module):
         hidden_states = torch.cat((hidden_states_1, hidden_states_2), dim=1)
         return self.similarity_classifier(hidden_states)
 
+    def configure_optimizers(self):
+        lr = self.args.lr
+        optimizer = AdamW(self.parameters(), lr=lr)
+        return optimizer
+
+    def validation_step(self, batch, batch_idx, dataloader_idx):
+        task = self.args.validation_tasks[dataloader_idx]
+        if task == 'sst':
+            acc, *_ = model_eval_sst(batch, self, single_batch=True)
+            self.log('val_sentiment_accuracy', acc)
+        elif task == 'para':
+            acc, *_ = model_eval_paraphrase(batch, self, single_batch=True)
+            self.log('val_paraphrase_accuracy', acc)
+        elif task == 'sts':
+            corr, *_ = model_eval_sts(batch, self, single_batch=True)
+            self.log('val_sts_corr', corr)
 
 
-def train_multitask(args):
-    '''Train MultitaskBERT.
-
-    Currently only trains on SST dataset. The way you incorporate training examples
-    from other datasets into the training procedure is up to you. To begin, take a
-    look at test_multitask below to see how you can use the custom torch `Dataset`s
-    in datasets.py to load in examples from the Quora and SemEval datasets.
-    '''
-    device = get_device(args.use_gpu)
-
+def create_datasets(args):
     # Create the data and its corresponding datasets and dataloader.
     sst_train_data, num_labels,para_train_data, sts_train_data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
     sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='train')
@@ -182,63 +213,128 @@ def train_multitask(args):
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn)
 
-    # Init model.
+    datasets = {
+        'sst': (sst_train_dataloader, sst_dev_dataloader),
+        'para': (para_train_dataloader, para_dev_dataloader),
+        'sts': (sts_train_dataloader, sts_dev_dataloader),
+        'num_labels': num_labels
+    }
+
+    return datasets
+
+def get_config(args, datasets):
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
-              'num_labels': num_labels,
+              'num_labels': datasets['num_labels'],
               'hidden_size': 768,
               'data_dir': '.',
               'fine_tune_mode': args.fine_tune_mode}
 
     config = SimpleNamespace(**config)
 
-    model = MultitaskBERT(config)
+    return config
+
+
+
+def train_multitask(args):
+    '''Train MultitaskBERT.
+
+    Currently only trains on SST dataset. The way you incorporate training examples
+    from other datasets into the training procedure is up to you. To begin, take a
+    look at test_multitask below to see how you can use the custom torch `Dataset`s
+    in datasets.py to load in examples from the Quora and SemEval datasets.
+    '''
+    device = get_device(args.use_gpu)
+    datasets = args.datasets
+
+    # Init model.
+
+    config = get_config(args, datasets)
     
-    # Move model to device only if not using ray, as ray will handle this.
-    if not args.use_ray:
+
+    task = args.task 
+
+    lightening_params = {
+        'precision': args.precision,
+        'accelerator': 'auto' if args.use_gpu else 'cpu',
+        'devices': 'auto'
+    }
+
+    if args.epochs_per_task:
+        callbacks = []
+
+    else:
+        callbacks = [EarlyStopping(monitor='train_loss', patience=3)]
+
+    if args.use_ray:
+        callbacks.append(ray_pl.RayTrainReportCallback())
+        lightening_params = {
+            'precision': args.precision,
+            'devices': 'auto',
+            'accelerator': 'auto',
+            'strategy': ray_pl.RayFSDPStrategy() if args.strategy == 'fsdp' else ray_pl.RayDDPStrategy(find_unused_parameters=True),
+            'plugins': [ray_pl.RayLightningEnvironment()],
+            'callbacks': callbacks
+        }
+
+
+    # create the model
+    model = MultitaskBERT(config, args)
+    model.set_task_type(task)
+
+    # create the pl trainer
+
+    trainer = pl.Trainer(max_epochs=args.max_epochs, **lightening_params)
+    # decide if model is trained by ray or not
+    if args.use_ray:
+        ray.train.lightning.prepare_trainer(trainer)
+    else:
         model = model.to(device)
 
-    lr = args.lr
-    optimizer = AdamW(model.parameters(), lr=lr)
-    
-    training_loop = vanilla_training_loop if not args.use_ray else ray_training_loop
-    # Run for the specified number of epochs.
-    if 'sst' in args.train_datasets:
-        logging.info("Training on SST")
-        training_loop(args, model, optimizer, sst_batch_loss, sst_train_dataloader, sst_dev_dataloader, device, config, model_eval_sst, 'sentiment')
+    # get the data 
+    train_dataloader, _ = datasets[task]
 
-    if 'para' in args.train_datasets:
-        logging.info("Training on Paraphrase")
-        training_loop(args, model, optimizer, para_batch_loss, para_train_dataloader, para_dev_dataloader, device, config, model_eval_paraphrase, 'paraphrase')
-
-    if 'sts' in args.train_datasets:
-        logging.info("Training on STS")
-        training_loop(args, model, optimizer, sts_batch_loss, sts_train_dataloader, sts_dev_dataloader, device, config, model_eval_sts, 'similarity')
+    # get the validation data
+    validation_dataloaders = []
+    for task in args.validation_tasks:
+        validation_dataloaders.append(datasets[task][1])
 
 
+    checkpoint = train.get_checkpoint()
+    if checkpoint:
+        print(f"Resuming from {checkpoint}")
+        with checkpoint.as_directory() as ckpt_dir:
+            ckpt_path = os.path.join(ckpt_dir, "checkpoint.ckpt")
+            # validate existing metrics
+            trainer.validate(model, dataloaders=validation_dataloaders, ckpt_path=ckpt_path)
 
-def test_multitask(args):
+            # run the training loop
+            trainer.fit(model,
+                train_dataloaders=train_dataloader,
+                val_dataloaders=validation_dataloaders,
+                ckpt_path=ckpt_path)
+    else:
+         trainer.fit(model,
+                train_dataloaders=train_dataloader,
+                val_dataloaders=validation_dataloaders)
+
+    save_model(model, None, args, config, args.filepath)
+
+
+def test_multitask(args, from_checkpoint=False):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = get_device(args.use_gpu)
-        saved = torch.load(args.filepath, map_location=device)
-        config = saved['model_config']
 
-        new_state_dict = OrderedDict()
+        if from_checkpoint:
+            config = get_config(args, args.datasets)
+            model = MultitaskBERT.load_from_checkpoint(args.filepath, config=config, args=args)
+        else:
+            saved = torch.load(args.filepath, map_location=device)
+            config = saved['model_config']
 
-        for k, v in saved.items():
-            if k == 'model':
-                new_state_dict['model'] = OrderedDict()
-                for k1, v1 in v.items():
-                    if 'module' in k1:
-                        new_state_dict['model'][k1.replace('module.', '')] = v1
-                    else:
-                        new_state_dict['model'][k1] = v1
-            else:
-                new_state_dict[k] = v
+            model = MultitaskBERT(config, args)
+            model.load_state_dict(saved['model'])
         
-        saved = new_state_dict
-        model = MultitaskBERT(config)
-        model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
 
@@ -320,11 +416,12 @@ def test_multitask(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train-datasets", type=str, nargs='+', default=["sst", "para", "sts"])
+    parser.add_argument("--tasks", type=str, help="tasks to train for", nargs="+", default=["sst", "para", "sts"])
+    parser.add_argument("--validation-tasks", type=str, help="tasks to run validations for", nargs="+", default=["sst", "para", "sts"])
     parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--storage-path", help="Path where to store ray results and checkpoints", type=str, required='--use-ray' in sys.argv)
     parser.add_argument("--data-dir", help="Path to train and dev datasets, expects them to be under data folder", type=str, required='--use-ray' in sys.argv, default='')
-    parser.add_argument("--output-dir", help="Path to store the best model at", type=str, default='', required='--use-ray' in sys.argv)
+    parser.add_argument("--output-dir", help="Path to store the best model at", type=str, default='', required='--filepath' not in sys.argv and '--use-ray' in sys.argv)
     parser.add_argument("--name", type=str, required='--use-ray' in sys.argv, help="Name of the experiment")
     parser.add_argument("--debug", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--num-workers", type=int, required='--use-ray' in sys.argv)
@@ -343,7 +440,8 @@ def get_args():
     parser.add_argument("--sts_test", type=str, default="data/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--max-epochs", type=int, default=100)
+    parser.add_argument("--epochs-per-task", type=int, default=10)
     parser.add_argument("--fine-tune-mode", type=str,
                         help='last-linear-layer: the BERT parameters are frozen and the task specific head parameters are updated; full-model: BERT parameters are updated as well',
                         choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
@@ -362,8 +460,10 @@ def get_args():
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
     parser.add_argument("--resume-from-checkpoint", type=str, help="Specify a checkpoint to resume from", default=None)
-    parser.add_argument("--filepath", type=str, help="Path to save the model", default=None)
-    parser.add_argument("--mode", type=str, help="train or test", default="train")
+    parser.add_argument("--strategy", type=str, help="Type of strategy", default='ddp')
+    parser.add_argument("--precision", type=str, help="Precision", default='16-mixed')
+    parser.add_argument("--mode", type=str, default='train', help="train, test")
+    parser.add_argument("--filepath", type=str, default=None)
 
     args = parser.parse_args()
     return args
@@ -372,11 +472,15 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
     args = get_args()
-    if not args.filepath:
-        args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.batch_size}-multitask.pt' # Save path.
 
-    if args.output_dir:
-        args.filepath = prepend_dir(args.output_dir, args.filepath)
+    # decide where to load the model from
+    # if not specified use the default name
+    # wih default output directory
+    if not args.filepath:
+        args.filepath = f'{args.fine_tune_mode}-{args.lr}-multitask.pt' # Save path.
+
+        if args.output_dir:
+            args.filepath = prepend_dir(args.output_dir, args.filepath)
     
     if args.data_dir:
         args.sst_train = prepend_dir(args.data_dir, args.sst_train)
@@ -392,26 +496,42 @@ if __name__ == "__main__":
         args.sts_test = prepend_dir(args.data_dir, args.sts_test)
 
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    
-    if args.mode == "test":
-        logging.info("Testing Multitask BERT")
-        test_multitask(args)
 
+    args.datasets = create_datasets(args)
+
+    if args.mode == 'test':
+        logging.info("-----------------Testing-----------------")
+        is_checkpoint = False
+        if args.resume_from_checkpoint is not None:
+            args.filepath = args.resume_from_checkpoint
+            is_checkpoint = True
+        test_multitask(args, from_checkpoint=is_checkpoint)
+
+    elif args.mode == 'train':
+        checkpoint = None
+        for task in args.tasks:
+            args.task = task
+            logging.info("-----------------Training-----------------")
+            if not args.use_ray:
+                train_multitask(args)
+            else:
+                logging.info(f"Using Ray for training with {args.num_workers} workers.")
+                scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
+                # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
+                checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
+                run_config = ray.train.RunConfig(storage_path=args.storage_path,
+                                                 name=args.name, 
+                                                 checkpoint_config=checkpoint_config)
+                if not checkpoint:
+                    checkpoint = Checkpoint(args.resume_from_checkpoint) if args.resume_from_checkpoint else None 
+                trainer = ray.train.torch.TorchTrainer(train_multitask, 
+                                                       train_loop_config=args, 
+                                                       scaling_config=scaling_config, 
+                                                       run_config=run_config,
+                                                       resume_from_checkpoint=checkpoint)
+                result = trainer.fit()
+                checkpoint = result.checkpoint
+                if args.epochs_per_task:
+                    args.max_epochs += args.epochs_per_task
     else:
-        if not args.use_ray:
-            train_multitask(args)
-        else:
-            logging.info(f"Using Ray for training with {args.num_workers} workers.")
-            scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
-            # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
-            checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
-            run_config = ray.train.RunConfig(storage_path=args.storage_path,
-                                             name=args.name, 
-                                             checkpoint_config=checkpoint_config)
-
-            trainer = ray.train.torch.TorchTrainer(train_multitask, 
-                                                   train_loop_config=args, 
-                                                   scaling_config=scaling_config, 
-                                                   run_config=run_config,
-                                                   resume_from_checkpoint=args.resume_from_checkpoint)
-            result = trainer.fit()
+        raise ValueError("Mode must be either 'train' or 'test'")
