@@ -280,7 +280,7 @@ def train_multitask(args):
 
     # create the pl trainer
 
-    trainer = pl.Trainer(max_epochs=args.epochs_per_task or args.max_epochs, **lightening_params)
+    trainer = pl.Trainer(max_epochs=args.max_epochs, **lightening_params)
     # decide if model is trained by ray or not
     if args.use_ray:
         ray.train.lightning.prepare_trainer(trainer)
@@ -411,7 +411,6 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tasks", type=str, help="tasks to train for", nargs="+", default=["sst", "para", "sts"])
     parser.add_argument("--validation-tasks", type=str, help="tasks to run validations for", nargs="+", default=["sst", "para", "sts"])
-    parser.add_argument("--resume-checkpoint", type=str, default=None)
     parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--storage-path", help="Path where to store ray results and checkpoints", type=str, required='--use-ray' in sys.argv)
     parser.add_argument("--data-dir", help="Path to train and dev datasets, expects them to be under data folder", type=str, required='--use-ray' in sys.argv, default='')
@@ -517,7 +516,7 @@ if __name__ == "__main__":
                                                  name=args.name, 
                                                  checkpoint_config=checkpoint_config)
                 if not checkpoint:
-                    checkpoint = Checkpoint(args.resume_checkpoint) if args.resume_checkpoint else None 
+                    checkpoint = Checkpoint(args.resume_from_checkpoint) if args.resume_from_checkpoint else None 
                 trainer = ray.train.torch.TorchTrainer(train_multitask, 
                                                        train_loop_config=args, 
                                                        scaling_config=scaling_config, 
@@ -526,6 +525,6 @@ if __name__ == "__main__":
                 result = trainer.fit()
                 checkpoint = result.checkpoint
                 if args.epochs_per_task:
-                    args.epochs_per_task += args.epochs_per_task
+                    args.max_epochs += args.epochs_per_task
     else:
         raise ValueError("Mode must be either 'train' or 'test'")
