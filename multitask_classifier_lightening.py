@@ -171,6 +171,18 @@ class MultitaskBERT(pl.LightningModule):
         optimizer = AdamW(self.parameters(), lr=lr)
         return optimizer
 
+    def validation_step(self, batch, batch_idx, dataloader_idx):
+        task = self.args.validation_tasks[dataloader_idx]
+        if task == 'sst':
+            acc, *_ = model_eval_sst(batch, self, single_batch=True)
+            self.log('val_sentiment_accuracy', acc)
+        elif task == 'para':
+            acc, *_ = model_eval_paraphrase(batch, self, single_batch=True)
+            self.log('val_paraphrase_accuracy', acc)
+        elif task == 'sts':
+            corr, *_ = model_eval_sts(batch, self, single_batch=True)
+            self.log('val_sts_corr', corr)
+
 
 def create_datasets(args):
     # Create the data and its corresponding datasets and dataloader.
@@ -275,7 +287,13 @@ def train_multitask(args):
         model = model.to(device)
 
     # get the data 
-    train_dataloader, dev_dataloader = datasets[task]
+    train_dataloader, _ = datasets[task]
+
+    # get the validation data
+    validation_dataloaders = []
+    for task in args.validation_tasks:
+        validation_dataloaders.append(datasets[task][1])
+
 
     checkpoint = train.get_checkpoint()
     if checkpoint:
@@ -284,12 +302,12 @@ def train_multitask(args):
             ckpt_path = os.path.join(ckpt_dir, "checkpoint.ckpt")
             trainer.fit(model,
                 train_dataloaders=train_dataloader,
-                val_dataloaders=dev_dataloader,
+                val_dataloaders=validation_dataloaders,
                 ckpt_path=ckpt_path)
     else:
          trainer.fit(model,
                 train_dataloaders=train_dataloader,
-                val_dataloaders=dev_dataloader) 
+                val_dataloaders=validation_dataloaders)
 
     save_model(model, None, args, config, args.filepath)
 
@@ -391,6 +409,7 @@ def test_multitask(args, from_checkpoint=False):
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tasks", type=str, help="tasks to train for", nargs="+", default=["sst", "para", "sts"])
+    parser.add_argument("--validation-tasks", type=str, help="tasks to run validations for", nargs="+", default=["sst", "para", "sts"])
     parser.add_argument("--resume-checkpoint", type=str, default=None)
     parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--storage-path", help="Path where to store ray results and checkpoints", type=str, required='--use-ray' in sys.argv)
