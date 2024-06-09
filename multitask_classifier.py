@@ -25,6 +25,7 @@ import sys
 from bert import BertModel
 from optimizer import AdamW
 from tqdm import tqdm
+from ray.train.torch import prepare_model, prepare_data_loader
 
 from datasets import (
     SentenceClassificationDataset,
@@ -39,6 +40,7 @@ from train_functions import training_loop as vanilla_training_loop, sst_batch_lo
 from train_functions_ray import training_loop as ray_training_loop
 from utils import get_device, prepend_dir
 import ray
+from collections import OrderedDict
 
 # Fix the random seed.
 def seed_everything(seed=11711):
