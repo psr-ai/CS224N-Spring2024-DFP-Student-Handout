@@ -258,12 +258,13 @@ def train_multitask(args):
     }
 
     if args.epochs_per_task:
-        callbacks = [ray_pl.RayTrainReportCallback()]
+        callbacks = []
 
     else:
-        callbacks = [ray_pl.RayTrainReportCallback(), EarlyStopping(monitor='train_loss', patience=3)]
-    
+        callbacks = [EarlyStopping(monitor='train_loss', patience=3)]
+
     if args.use_ray:
+        callbacks.append(ray_pl.RayTrainReportCallback())
         lightening_params = {
             'devices': 'auto',
             'accelerator': 'auto',
