@@ -42,7 +42,12 @@ from utils import get_device, prepend_dir
 import ray
 import lightning.pytorch as pl
 import ray.train.lightning as ray_pl
-from lightning.pytorch.callbacks import EarlyStopping
+from lightning.pytorch.callbacks import EarlyStopping, Callback
+from ray import train
+from tempfile import TemporaryDirectory
+import os
+from ray.train import Checkpoint
+
 # Fix the random seed.
 def seed_everything(seed=11711):
     random.seed(seed)
@@ -56,7 +61,6 @@ def seed_everything(seed=11711):
 
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
-
 
 class MultitaskBERT(pl.LightningModule):
     '''
@@ -168,17 +172,7 @@ class MultitaskBERT(pl.LightningModule):
         return optimizer
 
 
-
-def train_multitask(args):
-    '''Train MultitaskBERT.
-
-    Currently only trains on SST dataset. The way you incorporate training examples
-    from other datasets into the training procedure is up to you. To begin, take a
-    look at test_multitask below to see how you can use the custom torch `Dataset`s
-    in datasets.py to load in examples from the Quora and SemEval datasets.
-    '''
-    device = get_device(args.use_gpu)
-
+def create_datasets(args):
     # Create the data and its corresponding datasets and dataloader.
     sst_train_data, num_labels,para_train_data, sts_train_data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
     sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='train')
@@ -207,65 +201,84 @@ def train_multitask(args):
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn)
 
-    tasks = {
+    datasets = {
         'sst': (sst_train_dataloader, sst_dev_dataloader),
         'para': (para_train_dataloader, para_dev_dataloader),
-        'sts': (sts_train_dataloader, sts_dev_dataloader)
+        'sts': (sts_train_dataloader, sts_dev_dataloader),
+        'num_labels': num_labels
     }
+
+    return datasets
+
+
+def train_multitask(args):
+    '''Train MultitaskBERT.
+
+    Currently only trains on SST dataset. The way you incorporate training examples
+    from other datasets into the training procedure is up to you. To begin, take a
+    look at test_multitask below to see how you can use the custom torch `Dataset`s
+    in datasets.py to load in examples from the Quora and SemEval datasets.
+    '''
+    device = get_device(args.use_gpu)
+    datasets = args.datasets
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
-              'num_labels': num_labels,
+              'num_labels': datasets['num_labels'],
               'hidden_size': 768,
               'data_dir': '.',
               'fine_tune_mode': args.fine_tune_mode}
 
     config = SimpleNamespace(**config)
 
-    
-    # Move model to device only if not using ray, as ray will handle this.
-    trainer = None
-    model = None
-    for task in args.train_datasets:
+    task = args.task 
 
+    lightening_params = {
+        'precision': args.precision
+    }
+    
+    if args.use_ray:
         lightening_params = {
-            'precision': args.precision
+            'devices': 'auto',
+            'accelerator': 'auto',
+            'strategy': ray_pl.RayFSDPStrategy() if args.strategy == 'fsdp' else ray_pl.RayDDPStrategy(find_unused_parameters=True),
+            'plugins': [ray_pl.RayLightningEnvironment()],
+            'callbacks': [ray_pl.RayTrainReportCallback(), EarlyStopping(monitor='train_loss', patience=3)]
         }
-        
-        if args.use_ray:
-            lightening_params = {
-                'devices': 'auto',
-                'accelerator': 'auto',
-                'strategy': ray_pl.RayFSDPStrategy() if args.strategy == 'fsdp' else ray_pl.RayDDPStrategy(find_unused_parameters=True),
-                'plugins': [ray_pl.RayLightningEnvironment()],
-                'callbacks': [ray_pl.RayTrainReportCallback(), EarlyStopping(monitor='train_loss', patience=3)]
-            }
 
-
-        print(f"Training on {task}")
-        if trainer:
-            checkpoint = trainer.checkpoint_callback.best_model_path
-            print(f"Resuming from {checkpoint}")
-            model = MultitaskBERT.load_from_checkpoint(checkpoint, config=config, args=args)
-        else:
-            model = MultitaskBERT(config, args)
-        
-        trainer = pl.Trainer(max_epochs=args.epochs, **lightening_params)
-        if args.use_ray:
-            ray.train.lightning.prepare_trainer(trainer)
-        else:
-            model = model.to(device)
-
-
-        train_dataloader, dev_dataloader = tasks[task]
-        model.set_task_type(task)
-        trainer.fit(model,
-                    train_dataloaders=train_dataloader,
-                    val_dataloaders=dev_dataloader)
 
     
-    if not model:
-        return
+
+    # create the model
+    model = MultitaskBERT(config, args)
+    model.set_task_type(task)
+
+    # create the pl trainer
+
+    trainer = pl.Trainer(max_epochs=args.max_epochs, **lightening_params)
+    # decide if model is trained by ray or not
+    if args.use_ray:
+        ray.train.lightning.prepare_trainer(trainer)
+    else:
+        model = model.to(device)
+
+    # get the data 
+    train_dataloader, dev_dataloader = datasets[task]
+
+    checkpoint = train.get_checkpoint()
+    if checkpoint:
+        print(f"Resuming from {checkpoint}")
+        with checkpoint.as_directory() as ckpt_dir:
+            ckpt_path = os.path.join(ckpt_dir, "checkpoint.ckpt")
+            trainer.fit(model,
+                train_dataloaders=train_dataloader,
+                val_dataloaders=dev_dataloader,
+                ckpt_path=ckpt_path)
+    else:
+         trainer.fit(model,
+                train_dataloaders=train_dataloader,
+                val_dataloaders=dev_dataloader) 
+
     save_model(model, None, args, config, args.filepath)
 
 
@@ -273,7 +286,7 @@ def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = get_device(args.use_gpu)
-        saved = torch.load(args.filepath)
+        saved = torch.load(args.filepath, map_location=device)
         config = saved['model_config']
 
         model = MultitaskBERT(config, args)
@@ -359,11 +372,12 @@ def test_multitask(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train-datasets", type=str, nargs='+', default=["sst", "para", "sts"])
+    parser.add_argument("--tasks", type=str, help="tasks to train for", nargs="+", default=["sst", "para", "sts"])
+    parser.add_argument("--resume-checkpoint", type=str, default=None)
     parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--storage-path", help="Path where to store ray results and checkpoints", type=str, required='--use-ray' in sys.argv)
     parser.add_argument("--data-dir", help="Path to train and dev datasets, expects them to be under data folder", type=str, required='--use-ray' in sys.argv, default='')
-    parser.add_argument("--output-dir", help="Path to store the best model at", type=str, default='', required='--use-ray' in sys.argv)
+    parser.add_argument("--output-dir", help="Path to store the best model at", type=str, default='', required='--filepath' not in sys.argv and '--use-ray' in sys.argv)
     parser.add_argument("--name", type=str, required='--use-ray' in sys.argv, help="Name of the experiment")
     parser.add_argument("--debug", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--num-workers", type=int, required='--use-ray' in sys.argv)
@@ -382,7 +396,7 @@ def get_args():
     parser.add_argument("--sts_test", type=str, default="data/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--max-epochs", type=int, default=100)
     parser.add_argument("--fine-tune-mode", type=str,
                         help='last-linear-layer: the BERT parameters are frozen and the task specific head parameters are updated; full-model: BERT parameters are updated as well',
                         choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
@@ -414,7 +428,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
     args = get_args()
     if not args.filepath:
-        args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+        args.filepath = f'{args.fine_tune_mode}-{args.lr}-multitask.pt' # Save path.
 
         if args.output_dir:
             args.filepath = prepend_dir(args.output_dir, args.filepath)
@@ -434,28 +448,35 @@ if __name__ == "__main__":
 
     seed_everything(args.seed)  # Fix the seed for reproducibility.
 
+    args.datasets = create_datasets(args)
+
     if args.mode == 'test':
         logging.info("-----------------Testing-----------------")
         test_multitask(args)
 
     elif args.mode == 'train':
-        logging.info("-----------------Training-----------------")
-        if not args.use_ray:
-            train_multitask(args)
-        else:
-            logging.info(f"Using Ray for training with {args.num_workers} workers.")
-            scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
-            # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
-            checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
-            run_config = ray.train.RunConfig(storage_path=args.storage_path,
-                                             name=args.name, 
-                                             checkpoint_config=checkpoint_config)
-
-            trainer = ray.train.torch.TorchTrainer(train_multitask, 
-                                                   train_loop_config=args, 
-                                                   scaling_config=scaling_config, 
-                                                   run_config=run_config,
-                                                   resume_from_checkpoint=args.resume_from_checkpoint)
-            result = trainer.fit()
+        checkpoint = None
+        for task in args.tasks:
+            args.task = task
+            logging.info("-----------------Training-----------------")
+            if not args.use_ray:
+                train_multitask(args)
+            else:
+                logging.info(f"Using Ray for training with {args.num_workers} workers.")
+                scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
+                # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
+                checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
+                run_config = ray.train.RunConfig(storage_path=args.storage_path,
+                                                 name=args.name, 
+                                                 checkpoint_config=checkpoint_config)
+                if not checkpoint:
+                    checkpoint = Checkpoint(args.resume_checkpoint) if args.resume_checkpoint else None 
+                trainer = ray.train.torch.TorchTrainer(train_multitask, 
+                                                       train_loop_config=args, 
+                                                       scaling_config=scaling_config, 
+                                                       run_config=run_config,
+                                                       resume_from_checkpoint=checkpoint)
+                result = trainer.fit()
+                checkpoint = result.checkpoint
     else:
         raise ValueError("Mode must be either 'train' or 'test'")
