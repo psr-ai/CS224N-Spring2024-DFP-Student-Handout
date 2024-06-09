@@ -373,21 +373,26 @@ if __name__ == "__main__":
         args.sts_test = prepend_dir(args.data_dir, args.sts_test)
 
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    if not args.use_ray:
-        train_multitask(args)
+    
+    if args.mode == "test":
+        logging.info("Testing Multitask BERT")
         test_multitask(args)
-    else:
-        logging.info(f"Using Ray for training with {args.num_workers} workers.")
-        scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
-        # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
-        checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
-        run_config = ray.train.RunConfig(storage_path=args.storage_path,
-                                         name=args.name, 
-                                         checkpoint_config=checkpoint_config)
 
-        trainer = ray.train.torch.TorchTrainer(train_multitask, 
-                                               train_loop_config=args, 
-                                               scaling_config=scaling_config, 
-                                               run_config=run_config,
-                                               resume_from_checkpoint=args.resume_from_checkpoint)
-        result = trainer.fit()
+    else:
+        if not args.use_ray:
+            train_multitask(args)
+        else:
+            logging.info(f"Using Ray for training with {args.num_workers} workers.")
+            scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
+            # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
+            checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
+            run_config = ray.train.RunConfig(storage_path=args.storage_path,
+                                             name=args.name, 
+                                             checkpoint_config=checkpoint_config)
+
+            trainer = ray.train.torch.TorchTrainer(train_multitask, 
+                                                   train_loop_config=args, 
+                                                   scaling_config=scaling_config, 
+                                                   run_config=run_config,
+                                                   resume_from_checkpoint=args.resume_from_checkpoint)
+            result = trainer.fit()
