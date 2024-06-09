@@ -71,4 +71,4 @@ jobs:
         if [ -f requirements.mac.txt ]; then pip install -r requirements.mac.txt; fi
     - name: Demo run with cosine similarity and sts dataset
       run: |
-        python multitask_classifier_lightening.py --name validation-testing --data-dir /Users/psr/GitHub/psr-ai/CS224N-Spring2024-DFP-Student-Handout --storage-path /Users/psr/GitHub/psr-ai/CS224N-Spring2024-DFP-Student-Handout/results --fine-tune-mode last-linear-layer --lr 1e-3 --debug --epochs-per-task 1 --output-dir /Users/psr/GitHub/psr-ai/CS224N-Spring2024-DFP-Student-Handout/output --tasks para --cosine-similarity
+        python multitask_classifier_lightening.py --name validation-testing --data-dir /Users/psr/GitHub/psr-ai/CS224N-Spring2024-DFP-Student-Handout --storage-path /Users/psr/GitHub/psr-ai/CS224N-Spring2024-DFP-Student-Handout/results --fine-tune-mode last-linear-layer --lr 1e-3 --debug --epochs-per-task 1 --tasks para --cosine-similarity

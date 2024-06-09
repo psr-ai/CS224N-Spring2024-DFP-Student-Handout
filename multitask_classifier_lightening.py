@@ -301,6 +301,10 @@ def train_multitask(args):
         print(f"Resuming from {checkpoint}")
         with checkpoint.as_directory() as ckpt_dir:
             ckpt_path = os.path.join(ckpt_dir, "checkpoint.ckpt")
+            # validate existing metrics
+            trainer.validate(model, dataloaders=validation_dataloaders, ckpt_path=ckpt_path)
+
+            # run the training loop
             trainer.fit(model,
                 train_dataloaders=train_dataloader,
                 val_dataloaders=validation_dataloaders,
