@@ -23,10 +23,12 @@ frozenlist==1.4.1
 fsspec==2024.6.0
 google-api-core==2.19.0
 google-auth==2.30.0
+google-auth-httplib2==0.2.0
 googleapis-common-protos==1.63.1
 grpcio==1.64.1
 h11==0.14.0
 httpcore==1.0.5
+httplib2==0.22.0
 httptools==0.6.1
 httpx==0.27.0
 huggingface-hub==0.23.3
@@ -36,6 +38,8 @@ Jinja2==3.1.4
 joblib==1.4.2
 jsonschema==4.22.0
 jsonschema-specifications==2023.12.1
+lightning==2.2.5
+lightning-utilities==0.11.2
 linkify-it-py==2.0.3
 markdown-it-py==3.0.0
 MarkupSafe==2.1.5
@@ -64,9 +68,11 @@ pyasn1_modules==0.4.0
 pydantic==2.7.3
 pydantic_core==2.18.4
 Pygments==2.18.0
+pyparsing==3.1.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 python-multipart==0.0.9
+pytorch-lightning==2.2.5
 pytz==2024.1
 PyYAML==6.0.1
 ray==2.24.0
@@ -90,6 +96,7 @@ threadpoolctl==3.5.0
 tokenizers==0.15.0
 torch==2.3.1
 torchaudio==2.3.1
+torchmetrics==1.4.0.post0
 torchvision==0.18.1
 tqdm==4.58.0
 typer==0.12.3
@@ -97,6 +104,7 @@ typing_extensions==4.12.1
 tzdata==2024.1
 uc-micro-py==1.0.3
 ujson==5.10.0
+uritemplate==4.1.1
 urllib3==1.26.18
 uvicorn==0.30.1
 uvloop==0.19.0
