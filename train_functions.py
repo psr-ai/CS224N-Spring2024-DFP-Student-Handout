@@ -10,7 +10,7 @@ import logging
 def save_model(model, optimizer, args, config, filepath):
     save_info = {
         'model': model.state_dict(),
-        'optim': optimizer.state_dict(),
+        'optim': optimizer.state_dict() if optimizer else None,
         'args': args,
         'model_config': config,
         'system_rng': random.getstate(),
@@ -19,7 +19,7 @@ def save_model(model, optimizer, args, config, filepath):
     }
     
     torch.save(save_info, filepath)
-    logging.info(f"save the model to {filepath}")
+    print(f"save the model to {filepath}")
 
 def sst_batch_loss(args, model, batch, optimizer = None, device = None):
     b_ids, b_mask, b_labels = (batch['token_ids'],

@@ -35,7 +35,7 @@ from datasets import (
 )
 
 from evaluation import model_eval_sst, model_eval_paraphrase, model_eval_multitask, model_eval_test_multitask, model_eval_sts
-from train_functions import training_loop as vanilla_training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss
+from train_functions import training_loop as vanilla_training_loop, sst_batch_loss, para_batch_loss, sts_batch_loss, save_model
 from train_functions_ray import training_loop as ray_training_loop
 from train_functions import sst_batch_loss, sts_batch_loss, para_batch_loss
 from utils import get_device, prepend_dir
@@ -225,6 +225,7 @@ def train_multitask(args):
     
     # Move model to device only if not using ray, as ray will handle this.
     trainer = None
+    model = None
     for task in args.train_datasets:
 
         lightening_params = {
@@ -261,6 +262,11 @@ def train_multitask(args):
         trainer.fit(model,
                     train_dataloaders=train_dataloader,
                     val_dataloaders=dev_dataloader)
+
+    
+    if not model:
+        return
+    save_model(model, None, args, config, args.filepath)
 
 
 def test_multitask(args):
@@ -397,6 +403,8 @@ def get_args():
     parser.add_argument("--resume-from-checkpoint", type=str, help="Specify a checkpoint to resume from", default=None)
     parser.add_argument("--strategy", type=str, help="Type of strategy", default='ddp')
     parser.add_argument("--precision", type=str, help="Precision", default='16-mixed')
+    parser.add_argument("--mode", type=str, default='train', help="train or test")
+    parser.add_argument("--filepath", type=str, default=None)
 
     args = parser.parse_args()
     return args
@@ -405,10 +413,11 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s-%(levelname)s: %(message)s')
     args = get_args()
-    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+    if not args.filepath:
+        args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
 
-    if args.output_dir:
-        args.filepath = prepend_dir(args.output_dir, args.filepath)
+        if args.output_dir:
+            args.filepath = prepend_dir(args.output_dir, args.filepath)
     
     if args.data_dir:
         args.sst_train = prepend_dir(args.data_dir, args.sst_train)
@@ -424,23 +433,29 @@ if __name__ == "__main__":
         args.sts_test = prepend_dir(args.data_dir, args.sts_test)
 
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    if not args.use_ray:
-        train_multitask(args)
 
+    if args.mode == 'test':
         logging.info("-----------------Testing-----------------")
         test_multitask(args)
-    else:
-        logging.info(f"Using Ray for training with {args.num_workers} workers.")
-        scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
-        # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
-        checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
-        run_config = ray.train.RunConfig(storage_path=args.storage_path,
-                                         name=args.name, 
-                                         checkpoint_config=checkpoint_config)
 
-        trainer = ray.train.torch.TorchTrainer(train_multitask, 
-                                               train_loop_config=args, 
-                                               scaling_config=scaling_config, 
-                                               run_config=run_config,
-                                               resume_from_checkpoint=args.resume_from_checkpoint)
-        result = trainer.fit()
+    elif args.mode == 'train':
+        logging.info("-----------------Training-----------------")
+        if not args.use_ray:
+            train_multitask(args)
+        else:
+            logging.info(f"Using Ray for training with {args.num_workers} workers.")
+            scaling_config = ray.train.ScalingConfig(num_workers=args.num_workers, use_gpu=args.use_gpu)
+            # currently keeps the last checkpoint, can configure checkpoint_score_attribute with num to keep to save the best checkpoint
+            checkpoint_config = ray.train.CheckpointConfig(num_to_keep=None)
+            run_config = ray.train.RunConfig(storage_path=args.storage_path,
+                                             name=args.name, 
+                                             checkpoint_config=checkpoint_config)
+
+            trainer = ray.train.torch.TorchTrainer(train_multitask, 
+                                                   train_loop_config=args, 
+                                                   scaling_config=scaling_config, 
+                                                   run_config=run_config,
+                                                   resume_from_checkpoint=args.resume_from_checkpoint)
+            result = trainer.fit()
+    else:
+        raise ValueError("Mode must be either 'train' or 'test'")
