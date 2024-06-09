@@ -254,7 +254,9 @@ def train_multitask(args):
     task = args.task 
 
     lightening_params = {
-        'precision': args.precision
+        'precision': args.precision,
+        'accelerator': 'auto' if args.use_gpu else None,
+        'devices': 'auto'
     }
 
     if args.epochs_per_task:
@@ -266,6 +268,7 @@ def train_multitask(args):
     if args.use_ray:
         callbacks.append(ray_pl.RayTrainReportCallback())
         lightening_params = {
+            'precision': args.precision,
             'devices': 'auto',
             'accelerator': 'auto',
             'strategy': ray_pl.RayFSDPStrategy() if args.strategy == 'fsdp' else ray_pl.RayDDPStrategy(find_unused_parameters=True),
