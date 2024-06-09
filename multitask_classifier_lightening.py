@@ -41,7 +41,8 @@ from train_functions import sst_batch_loss, sts_batch_loss, para_batch_loss
 from utils import get_device, prepend_dir
 import ray
 import lightning.pytorch as pl
-
+import ray.train.lightning as ray_pl
+from lightning.pytorch.callbacks import EarlyStopping
 # Fix the random seed.
 def seed_everything(seed=11711):
     random.seed(seed)
@@ -65,7 +66,7 @@ class MultitaskBERT(pl.LightningModule):
     - Paraphrase detection (predict_paraphrase)
     - Semantic Textual Similarity (predict_similarity)
     '''
-    def __init__(self, config, args):
+    def __init__(self, config={}, args={}):
         super(MultitaskBERT, self).__init__()
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         # last-linear-layer mode does not require updating BERT paramters.
@@ -104,13 +105,15 @@ class MultitaskBERT(pl.LightningModule):
 
     def training_step(self, batch, _):
         if self.task_type == 'sst':
-            return sst_batch_loss(self.args, self, batch)
+            loss = sst_batch_loss(self.args, self, batch)
         elif self.task_type == 'para':
-            return para_batch_loss(self.args, self, batch)
+            loss = para_batch_loss(self.args, self, batch)
         elif self.task_type == 'sts':
-            return sts_batch_loss(self.args, self, batch)
+            loss = sts_batch_loss(self.args, self, batch)
         else:
             raise ValueError("Task type not set.")
+        self.log('train_loss', round(loss.item(), 4))
+        return loss
 
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
@@ -159,6 +162,11 @@ class MultitaskBERT(pl.LightningModule):
         hidden_states = torch.cat((hidden_states_1, hidden_states_2), dim=1)
         return self.similarity_classifier(hidden_states)
 
+    def configure_optimizers(self):
+        lr = self.args.lr
+        optimizer = AdamW(self.parameters(), lr=lr)
+        return optimizer
+
 
 
 def train_multitask(args):
@@ -199,6 +207,12 @@ def train_multitask(args):
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn)
 
+    tasks = {
+        'sst': (sst_train_dataloader, sst_dev_dataloader),
+        'para': (para_train_dataloader, para_dev_dataloader),
+        'sts': (sts_train_dataloader, sts_dev_dataloader)
+    }
+
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
               'num_labels': num_labels,
@@ -208,32 +222,45 @@ def train_multitask(args):
 
     config = SimpleNamespace(**config)
 
-    model = MultitaskBERT(config, args)
     
     # Move model to device only if not using ray, as ray will handle this.
-    if not args.use_ray:
-        model = model.to(device)
+    trainer = None
+    for task in args.train_datasets:
 
-    lr = args.lr
-    optimizer = AdamW(model.parameters(), lr=lr)
-    
-    training_loop = vanilla_training_loop if not args.use_ray else ray_training_loop
-    # Run for the specified number of epochs.
-    if 'sst' in args.train_datasets:
-        logging.info("Training on SST")
-        model.set_task_type('sst')
-        training_loop(args, model, optimizer, sst_batch_loss, sst_train_dataloader, sst_dev_dataloader, device, config, model_eval_sst, 'sentiment')
+        lightening_params = {
+            'precision': args.precision
+        }
+        
+        if args.use_ray:
+            lightening_params = {
+                'devices': 'auto',
+                'accelerator': 'auto',
+                'strategy': ray_pl.RayFSDPStrategy() if args.strategy == 'fsdp' else ray_pl.RayDDPStrategy(find_unused_parameters=True),
+                'plugins': [ray_pl.RayLightningEnvironment()],
+                'callbacks': [ray_pl.RayTrainReportCallback(), EarlyStopping(monitor='train_loss', patience=3)]
+            }
 
-    if 'para' in args.train_datasets:
-        logging.info("Training on Paraphrase")
-        model.set_task_type('para')
-        training_loop(args, model, optimizer, para_batch_loss, para_train_dataloader, para_dev_dataloader, device, config, model_eval_paraphrase, 'paraphrase')
 
-    if 'sts' in args.train_datasets:
-        logging.info("Training on STS")
-        model.set_task_type('sts')
-        training_loop(args, model, optimizer, sts_batch_loss, sts_train_dataloader, sts_dev_dataloader, device, config, model_eval_sts, 'similarity')
+        print(f"Training on {task}")
+        if trainer:
+            checkpoint = trainer.checkpoint_callback.best_model_path
+            print(f"Resuming from {checkpoint}")
+            model = MultitaskBERT.load_from_checkpoint(checkpoint, config=config, args=args)
+        else:
+            model = MultitaskBERT(config, args)
+        
+        trainer = pl.Trainer(max_epochs=args.epochs, **lightening_params)
+        if args.use_ray:
+            ray.train.lightning.prepare_trainer(trainer)
+        else:
+            model = model.to(device)
 
+
+        train_dataloader, dev_dataloader = tasks[task]
+        model.set_task_type(task)
+        trainer.fit(model,
+                    train_dataloaders=train_dataloader,
+                    val_dataloaders=dev_dataloader)
 
 
 def test_multitask(args):
@@ -368,6 +395,8 @@ def get_args():
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
     parser.add_argument("--resume-from-checkpoint", type=str, help="Specify a checkpoint to resume from", default=None)
+    parser.add_argument("--strategy", type=str, help="Type of strategy", default='ddp')
+    parser.add_argument("--precision", type=str, help="Precision", default='16-mixed')
 
     args = parser.parse_args()
     return args
@@ -397,6 +426,8 @@ if __name__ == "__main__":
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     if not args.use_ray:
         train_multitask(args)
+
+        logging.info("-----------------Testing-----------------")
         test_multitask(args)
     else:
         logging.info(f"Using Ray for training with {args.num_workers} workers.")
