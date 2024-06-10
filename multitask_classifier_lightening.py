@@ -62,6 +62,33 @@ def seed_everything(seed=11711):
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
+class BidirectionalLSTM(nn.Module):
+
+    # input = (batch_size, seq_len, input_size)
+    def __init__(self, input_size, hidden_size):
+        super(BidirectionalLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, bidirectional=True, batch_first=True)
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        return out  # (batch_size, seq_len, num_directions * hidden_size) Take the last time step output
+
+class CustomModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_classes):
+        super(CustomModel, self).__init__()
+        self.lstm = BidirectionalLSTM(input_size, hidden_size)
+        self.fc1 = nn.Linear(hidden_size*2, 50)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(50, num_classes)
+
+    def forward(self, x):
+        x = self.lstm(x)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
+
+
 class MultitaskBERT(pl.LightningModule):
     '''
     This module should use BERT for 3 tasks:
@@ -82,13 +109,8 @@ class MultitaskBERT(pl.LightningModule):
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.sentiment_classifier = nn.Sequential(
-            nn.Linear(BERT_HIDDEN_SIZE, BERT_HIDDEN_SIZE // 2),
-            nn.ReLU(),
-            nn.Dropout(config.hidden_dropout_prob),
-            nn.Linear(BERT_HIDDEN_SIZE // 2, N_SENTIMENT_CLASSES)
-        )
-
+        self.desired_context = 128
+        self.sentiment_classifier = CustomModel(BERT_HIDDEN_SIZE * self.desired_context, 256, N_SENTIMENT_CLASSES)
         self.paraphrase_classifier = nn.Sequential(
             nn.Linear(BERT_HIDDEN_SIZE * 2, BERT_HIDDEN_SIZE),
             nn.ReLU(),
@@ -119,7 +141,15 @@ class MultitaskBERT(pl.LightningModule):
         self.log('train_loss', round(loss.item(), 4))
         return loss
 
-    def forward(self, input_ids, attention_mask):
+    def fix_dimension(self, x):
+        current_size = x.size(1)
+        padding_needed = self.desired_context - current_size
+        pad_config = (0, 0, 0, padding_needed)
+        x = F.pad(x, pad_config, 'constant', 0)
+        return x.view(x.size(0), -1)
+        
+
+    def forward(self, input_ids, attention_mask, use_last_hidden_state=False):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
@@ -127,8 +157,15 @@ class MultitaskBERT(pl.LightningModule):
         # (e.g., by adding other layers).
         
          
-        x = self.bert(input_ids, attention_mask)['pooler_output']
-        x = self.dropout(x)
+        x = self.bert(input_ids, attention_mask)
+        last_hidden_state = x['last_hidden_state']
+        pooler_output = x['pooler_output']
+
+        if use_last_hidden_state:
+            last_hidden_state = self.fix_dimension(last_hidden_state)
+            x = self.dropout(last_hidden_state)
+        else:
+            x = self.dropout(pooler_output)
         return x
 
     def predict_sentiment(self, input_ids, attention_mask):
@@ -138,7 +175,7 @@ class MultitaskBERT(pl.LightningModule):
         Thus, your output should contain 5 logits for each sentence.
         '''
         ### TODO
-        hidden_states = self.forward(input_ids, attention_mask)
+        hidden_states = self.forward(input_ids, attention_mask, True)
         return self.sentiment_classifier(hidden_states)
 
     def predict_paraphrase(self,
@@ -171,7 +208,7 @@ class MultitaskBERT(pl.LightningModule):
         optimizer = AdamW(self.parameters(), lr=lr)
         return optimizer
 
-    def validation_step(self, batch, batch_idx, dataloader_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         task = self.args.validation_tasks[dataloader_idx]
         if task == 'sst':
             acc, *_ = model_eval_sst(batch, self, single_batch=True)
@@ -416,7 +453,7 @@ def test_multitask(args, from_checkpoint=False):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tasks", type=str, help="tasks to train for", nargs="+", default=["sst", "para", "sts"])
+    parser.add_argument("--tasks", type=str, help="tasks to train for", nargs="+", default=["para", "sts", "sst"])
     parser.add_argument("--validation-tasks", type=str, help="tasks to run validations for", nargs="+", default=["sst", "para", "sts"])
     parser.add_argument("--use-ray", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--storage-path", help="Path where to store ray results and checkpoints", type=str, required='--use-ray' in sys.argv)
